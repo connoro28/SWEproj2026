@@ -4,9 +4,9 @@ Stake is a social accountability app built by Productivity Masters for CEN3031. 
 
 **Implemented:** registration, login/logout, member/admin access, draft goals, and private stake photo uploads with automated tests. **Planned:** projects/collaborators, check-ins, friendships/feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
 
-## Try it locally
+## Run locally
 
-Install Node.js 24 LTS with npm. If you use nvm, run `nvm install` and `nvm use` in this directory. Your system's old Node.js 12 cannot run this app.
+Install Node.js 24 LTS with npm. If you use nvm, run `nvm install` and `nvm use` in this directory.
 
 ```sh
 npm ci
@@ -34,7 +34,7 @@ Open **http://localhost:5173**. Vite serves the React interface and forwards `/a
 
 The Compose credentials in `.env.example` are for this local database only. Docker exposes PostgreSQL on localhost port **5433** (the container uses 5432), avoiding conflicts with a separately installed PostgreSQL service. The database port and API bind to loopback. If using PostgreSQL installed separately instead of Docker, create a database and set `DATABASE_URL` to its connection string and port, then run the migration.
 
-The migration creates users, sessions, goals, and photos. It is repeatable and does not erase data. Subsequent schema changes should use versioned migrations.
+The migration creates users, sessions, goals, and photos. It is repeatable and does not erase data.
 
 For the intended shared-server deployment, all browsers use the same Express server; only that server connects to the central PostgreSQL database and private storage. Do not point each teammate's independent backend at one shared database while keeping separate local upload directories: the photo files would be missing on the other backends. The local preview does not demonstrate multi-machine access.
 
@@ -82,10 +82,6 @@ Uploads accept JPEG, PNG, and WebP images up to 5 MB and 16 megapixels. Images a
 ### Removing users and their photos
 
 Deleting a user with SQL `DELETE FROM users WHERE ...` cascades to their goals, sessions, and photo metadata. A database trigger also queues the deleted photos' storage keys. The running API checks that queue on startup and every 30 seconds, removing the corresponding private image files. This frees disk space; the database stores metadata rather than the image bytes.
-
-The queue survives server restarts and failed filesystem operations. Rolled-back deletions do not queue file removal. Cleanup skips files still referenced by another photo record and never follows a storage key outside the private photo directory. Each pass handles up to 100 queued files. Use `DELETE`, not `TRUNCATE`, for account removal: per-row deletion triggers do not run for `TRUNCATE`.
-
-For an existing database, run `npm run db:migrate` to install the queue and trigger, then restart the API. This change applies to future deletions. Files already orphaned before the trigger was installed are not automatically removed because their metadata is already gone.
 
 ## Project layout
 
