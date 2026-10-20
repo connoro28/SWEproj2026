@@ -34,7 +34,9 @@ Open **http://localhost:5173**. Vite serves the React interface and forwards `/a
 
 The Compose credentials in `.env.example` are for this local database only. Docker exposes PostgreSQL on localhost port **5433** (the container uses 5432), avoiding conflicts with a separately installed PostgreSQL service. The database port and API bind to loopback. If using PostgreSQL installed separately instead of Docker, create a database and set `DATABASE_URL` to its connection string and port, then run the migration.
 
-The migration creates users, sessions, goals, and photos. It is repeatable and does not erase data.
+`npm run db:migrate` applies the numbered SQL files in `server/migrations/` in filename order and records each one in a `schema_migrations` table, so every file runs exactly once per database and rerunning the command only applies files it has not seen. Each file runs in a single transaction: a failing migration leaves no partial changes and is not recorded. `001_initial.sql` creates users, sessions, goals, and photos, and does not erase data.
+
+**Never edit a migration that has been committed or run anywhere.** Databases that already applied it will not run it again, so edits silently diverge. Put every schema change in a new, next-numbered file instead; see `server/migrations/README.md`.
 
 For the intended shared-server deployment, all browsers use the same Express server; only that server connects to the central PostgreSQL database and private storage. Do not point each teammate's independent backend at one shared database while keeping separate local upload directories: the photo files would be missing on the other backends. The local preview does not demonstrate multi-machine access.
 
@@ -88,8 +90,8 @@ Deleting a user with SQL `DELETE FROM users WHERE ...` cascades to their goals, 
 ```text
 client/                     React screens and styling
 server/app.js               API, authentication, authorization, uploads
-server/schema.sql           Initial PostgreSQL schema
-server/migrate.js           Repeatable initial database setup
+server/migrations/          Numbered PostgreSQL migrations
+server/migrate.js           Applies pending migrations once each
 server/test/                Integration tests
 server/preview.js           Single-machine embedded preview
 .github/workflows/check.yml PostgreSQL tests and frontend build

@@ -16,7 +16,7 @@ This starter turns the planned authentication, testing, and private upload work 
 
 Miguel: read `server/app.js` and `server/test/app.test.js` together. Run the tests, register two accounts, and demonstrate that the second account cannot retrieve the first account's stake photo. Review the implementation before claiming it as understood or complete in a report.
 
-Connor: review `server/schema.sql`, reproduce the PostgreSQL setup, and coordinate the next migration. Design projects, collaborators, goal windows, and check-ins before extending the draft-goal schema. The current initial migration is repeatable; future changes should use numbered migrations and a migration-history table.
+Connor: review `server/migrations/001_initial.sql`, reproduce the PostgreSQL setup, and coordinate the next migration. Design projects, collaborators, goal windows, and check-ins before extending the draft-goal schema. Schema changes now use numbered migrations in `server/migrations/`, tracked in the `schema_migrations` table; add each change as a new, next-numbered file.
 
 Ronin: run the React interface, review the form flow and responsive layout, and connect the next check-in screens to the agreed API. Review the Actions result after the branch is pushed; a workflow file alone is not a successful CI run.
 
@@ -50,4 +50,4 @@ No goals activate in this version. Target dates are planning dates, not deadline
 
 Use a feature branch and pull request. Include the problem, implemented behavior, test results, and unfinished features. Have a teammate reproduce the setup and review before merging. Never commit `.env`, credentials, uploaded images, or local database files.
 
-The implementation is on `codex/stake-foundation`. It has not been published or merged by this task.
+The implementation was on `feature/stake-foundation` and was merged via PR #1.
