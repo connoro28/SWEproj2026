@@ -49,5 +49,3 @@ No goals activate in this version. Target dates are planning dates, not deadline
 ## Branch review process
 
 Use a feature branch and pull request. Include the problem, implemented behavior, test results, and unfinished features. Have a teammate reproduce the setup and review before merging. Never commit `.env`, credentials, uploaded images, or local database files.
-
-The implementation is on `codex/stake-foundation`. It has not been published or merged by this task.
