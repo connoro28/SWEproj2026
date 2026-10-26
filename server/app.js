@@ -16,6 +16,17 @@ const publicUser = ({ id, name, email, role }) => ({ id, name, email, role });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 } });
 const fail = (res, status, message) => res.status(status).json({ error: message });
+const deadlinePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+const timeZones = new Set(Intl.supportedValuesOf('timeZone'));
+// supportedValuesOf lists only canonical names, but browsers also report valid
+// IANA aliases (UTC, Asia/Kolkata, Europe/Kyiv), so fall back to asking Intl.
+// The name pattern rejects UTC offsets such as +05:00, which Intl also accepts.
+function validTimeZone(zone) {
+  if (typeof zone !== 'string') return false;
+  if (timeZones.has(zone)) return true;
+  if (zone.length > 64 || !/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/.test(zone)) return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: zone }); return true; } catch { return false; }
+}
 
 export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', production = false, serveFrontend = production }) {
   const app = express();
@@ -112,14 +123,24 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
   });
 
   app.post('/api/goals', sessionUser, async (req, res) => {
-    const { title, description = '', targetDate = null } = req.body ?? {};
+    const { title, description = '', targetDate = null, frequency, deadlineTime, timezone, timesPerWeek } = req.body ?? {};
     const validDate = targetDate === null || (typeof targetDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(targetDate) &&
       Number.isFinite(Date.parse(targetDate)) && new Date(targetDate).toISOString().slice(0, 10) === targetDate);
     if (typeof title !== 'string' || !title.trim() || title.trim().length > 120 || typeof description !== 'string' || description.length > 1000 || !validDate) {
       return fail(res, 400, 'Enter a goal title (up to 120 characters), a short description, and a valid target date.');
     }
-    const { rows } = await db.query(`INSERT INTO goals (id, owner_id, title, description, target_date)
-      VALUES ($1, $2, $3, $4, $5) RETURNING *`, [randomUUID(), req.user.id, title.trim(), description.trim(), targetDate]);
+    if (frequency !== 'daily' && frequency !== 'weekly') return fail(res, 400, 'Choose a frequency: daily or weekly.');
+    if (frequency === 'weekly' && !(Number.isInteger(timesPerWeek) && timesPerWeek >= 1 && timesPerWeek <= 7)) {
+      return fail(res, 400, 'Weekly goals need a number of times per week from 1 to 7.');
+    }
+    if (frequency === 'daily' && timesPerWeek !== undefined) return fail(res, 400, 'Daily goals cannot set times per week.');
+    if (typeof deadlineTime !== 'string' || !deadlinePattern.test(deadlineTime)) {
+      return fail(res, 400, 'Enter a deadline time in 24-hour HH:MM format, such as 21:00.');
+    }
+    if (!validTimeZone(timezone)) return fail(res, 400, 'The time zone is not a recognized IANA time zone, such as America/New_York.');
+    const { rows } = await db.query(`INSERT INTO goals (id, owner_id, title, description, target_date, frequency, times_per_week, deadline_time, timezone)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`, [randomUUID(), req.user.id, title.trim(), description.trim(), targetDate,
+      frequency, frequency === 'weekly' ? timesPerWeek : null, deadlineTime, timezone]);
     res.status(201).json({ goal: { ...rows[0], stake_photo_id: null } });
   });
 
@@ -129,6 +150,25 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     if (!rows.length) return fail(res, 404, 'Goal not found.');
     next();
   }
+
+  // Activation is one-way: there is deliberately no endpoint to edit or deactivate an active goal.
+  app.post('/api/goals/:id/activate', sessionUser, ownGoal, async (req, res) => {
+    let rows;
+    try {
+      // The status and photo conditions are in the UPDATE, so concurrent requests activate a goal at most once.
+      ({ rows } = await db.query(`UPDATE goals g SET status = 'active', activated_at = now()
+        WHERE g.id = $1 AND g.status = 'draft' AND EXISTS (SELECT 1 FROM photos p WHERE p.goal_id = g.id)
+        RETURNING g.*, (SELECT p.id FROM photos p WHERE p.goal_id = g.id) AS stake_photo_id`, [req.params.id]));
+    } catch (error) {
+      // goals_active_schedule_check: drafts created before 002_goal_scheduling have no schedule.
+      if (error.code === '23514') return fail(res, 409, 'This goal has no schedule, so it cannot be activated.');
+      throw error;
+    }
+    if (rows.length) return res.json({ goal: rows[0] });
+    const { rows: [current] } = await db.query('SELECT status FROM goals WHERE id = $1', [req.params.id]);
+    if (current?.status === 'active') return fail(res, 409, 'This goal is already active.');
+    return fail(res, 409, 'Add a stake photo before activating this goal.');
+  });
 
   app.post('/api/goals/:id/stake', sessionUser, ownGoal,
     rateLimit({ windowMs: 15 * 60 * 1000, limit: 40 }), upload.single('photo'), async (req, res) => {

@@ -13,6 +13,18 @@ async function api(url, options = {}) {
   return result;
 }
 
+// The browser's IANA zone; deadlines are wall-clock times in the zone saved with each goal.
+const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+function formatDeadline(time) {
+  const [hours, minutes] = String(time).split(':').map(Number);
+  return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+function describeSchedule(goal) {
+  if (!goal.frequency) return 'No schedule set';
+  const by = `by ${formatDeadline(goal.deadline_time)}`;
+  return goal.frequency === 'daily' ? `Every day ${by}` : `${goal.times_per_week} ${goal.times_per_week === 1 ? 'time' : 'times'} per week ${by}`;
+}
+
 function Brand() { return <a className="brand" href="/" aria-label="Stake home">stake.</a>; }
 
 function App() {
@@ -60,6 +72,7 @@ function Dashboard({ user, setUser }) {
   const [goals, setGoals] = useState([]);
   const [view, setView] = useState('goals');
   const [creating, setCreating] = useState(false);
+  const [frequency, setFrequency] = useState('daily');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -73,9 +86,11 @@ function Dashboard({ user, setUser }) {
   useEffect(() => { reload(); }, []);
   async function createGoal(event) {
     event.preventDefault(); setBusy(true); setError('');
-    const body = Object.fromEntries(new FormData(event.currentTarget));
+    const { timesPerWeek, ...body } = Object.fromEntries(new FormData(event.currentTarget));
     body.targetDate ||= null;
-    try { await api('/goals', { method: 'POST', body }); setCreating(false); setNotice('Goal saved.'); await reload(); }
+    body.timezone = browserTimeZone;
+    if (body.frequency === 'weekly') body.timesPerWeek = Number(timesPerWeek);
+    try { await api('/goals', { method: 'POST', body }); setCreating(false); setFrequency('daily'); setNotice('Goal saved.'); await reload(); }
     catch (e) { setError(e.message); }
     finally { setBusy(false); }
   }
@@ -97,27 +112,38 @@ function Dashboard({ user, setUser }) {
       {view === 'goals' && <><div className="page-heading"><div><h1>My goals</h1><p className="muted">Create goals and add a private stake photo.</p></div><button className="primary" onClick={() => { setCreating(!creating); setNotice(''); }}>{creating ? 'Close form' : 'New goal'}</button></div>
         <section className="summary" aria-label="Goal summary"><div><strong>{goals.length}</strong><span>Goals</span></div><div><strong>{goals.filter(g => g.stake_photo_id).length}</strong><span>With a stake photo</span></div></section>
         {notice && <p className="success" role="status">{notice}</p>}
-        {creating && <section className="new-goal"><h2>New goal</h2><form onSubmit={createGoal}><label>Goal title<input name="title" maxLength={120} placeholder="e.g. Study for 30 minutes each day" required autoFocus /></label><label>Description <span className="muted">(optional)</span><textarea name="description" maxLength={1000} placeholder="Add details about your goal" rows={3} /></label><label>Target date <span className="muted">(optional)</span><input name="targetDate" type="date" /></label><div className="form-actions"><button type="button" className="secondary" onClick={() => setCreating(false)} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? 'Saving…' : 'Save goal'}</button></div></form></section>}
+        {creating && <section className="new-goal"><h2>New goal</h2><form onSubmit={createGoal}><label>Goal title<input name="title" maxLength={120} placeholder="e.g. Study for 30 minutes each day" required autoFocus /></label><label>Description <span className="muted">(optional)</span><textarea name="description" maxLength={1000} placeholder="Add details about your goal" rows={3} /></label><label>Target date <span className="muted">(optional)</span><input name="targetDate" type="date" /></label><label>Frequency<select name="frequency" value={frequency} onChange={e => setFrequency(e.target.value)}><option value="daily">Every day</option><option value="weekly">Some days each week</option></select></label>{frequency === 'weekly' && <label>Times per week<input name="timesPerWeek" type="number" min={1} max={7} step={1} defaultValue={3} required /></label>}<label>Deadline time<input name="deadlineTime" type="time" defaultValue="21:00" required /></label><p className="field-help">Deadlines use your time zone, <strong>{browserTimeZone}</strong>. The deadline is a hard cutoff with no grace period.</p><div className="form-actions"><button type="button" className="secondary" onClick={() => setCreating(false)} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? 'Saving…' : 'Save goal'}</button></div></form></section>}
         <div className="section-title"><h2>Saved goals</h2></div>
-        {loading ? <p role="status">Loading your goals…</p> : goals.length ? <div className="goal-grid">{goals.map(goal => <GoalCard key={goal.id} goal={goal} onUploaded={reload} />)}</div> : <section className="empty"><h2>No goals yet</h2><p>Create a goal to get started.</p><button className="secondary" onClick={() => setCreating(true)}>Create your first goal</button></section>}
-        <p className="build-note">Goals are saved as drafts. Check-ins and photo release are not available yet.</p></>}
+        {loading ? <p role="status">Loading your goals…</p> : goals.length ? <div className="goal-grid">{goals.map(goal => <GoalCard key={goal.id} goal={goal} onChanged={reload} />)}</div> : <section className="empty"><h2>No goals yet</h2><p>Create a goal to get started.</p><button className="secondary" onClick={() => setCreating(true)}>Create your first goal</button></section>}
+        <p className="build-note">Goals are saved as drafts and can be activated once they have a stake photo. Check-ins and photo release are not available yet.</p></>}
       {view === 'account' && <><div className="page-heading"><div><h1>My account</h1></div></div><section className="account-card"><dl><dt>Name</dt><dd>{user.name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account type</dt><dd>{user.role}</dd></dl><p className="muted">Your private stake photos are visible only to you.</p></section></>}
       {view === 'admin' && <><div className="page-heading"><div><h1>Member directory</h1><p className="muted">The newest 100 accounts. Content review and account management are planned for a later version.</p></div></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>{users.map(u => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td>{u.role}</td><td>{u.account_status}</td></tr>)}</tbody></table></div></>}
     </main>
   </div>;
 }
 
-function GoalCard({ goal, onUploaded }) {
+function GoalCard({ goal, onChanged }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(false);
   async function upload(event) {
     event.preventDefault(); setBusy(true); setError('');
-    try { await api(`/goals/${goal.id}/stake`, { method: 'POST', body: new FormData(event.currentTarget) }); await onUploaded(); }
+    try { await api(`/goals/${goal.id}/stake`, { method: 'POST', body: new FormData(event.currentTarget) }); await onChanged(); }
     catch (e) { setError(e.message); }
     finally { setBusy(false); }
   }
-  return <article className="goal-card"><div className="card-top"><span className="draft-badge">Draft</span></div><h3>{goal.title}</h3><p className="goal-description">{goal.description || 'No description added.'}</p><div className="goal-date">{goal.target_date ? `Target: ${String(goal.target_date).slice(0, 10)}` : 'No target date set'}</div><div className="stake-area">{goal.stake_photo_id ? <><div className="stake-status"><span>Private stake saved</span><button className="text-button" onClick={() => setPreview(!preview)}>{preview ? 'Hide photo' : 'View photo'}</button></div>{preview && <img className="stake-preview" src={`/api/photos/${goal.stake_photo_id}`} alt={`Your private stake for ${goal.title}`} />}</> : <form onSubmit={upload}><label className="file-label">Stake photo<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required /></label><p className="field-help">JPEG, PNG, or WebP · up to 5 MB / 16 megapixels</p><button className="secondary wide" disabled={busy}>{busy ? 'Uploading…' : 'Save private photo'}</button></form>}{error && <p className="error" role="alert">{error}</p>}</div></article>;
+  async function activate() {
+    setBusy(true); setError('');
+    try { await api(`/goals/${goal.id}/activate`, { method: 'POST' }); await onChanged(); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+  const active = goal.status === 'active';
+  return <article className="goal-card"><div className="card-top"><span className={active ? 'active-badge' : 'draft-badge'}>{active ? 'Active' : 'Draft'}</span></div><h3>{goal.title}</h3><p className="goal-description">{goal.description || 'No description added.'}</p><div className="goal-schedule">{describeSchedule(goal)}{goal.timezone && <span className="muted"> · {goal.timezone}</span>}</div><div className="goal-date">{goal.target_date ? `Target: ${String(goal.target_date).slice(0, 10)}` : 'No target date set'}</div><div className="stake-area">{goal.stake_photo_id ? <><div className="stake-status"><span>Private stake saved</span><button className="text-button" onClick={() => setPreview(!preview)}>{preview ? 'Hide photo' : 'View photo'}</button></div>{preview && <img className="stake-preview" src={`/api/photos/${goal.stake_photo_id}`} alt={`Your private stake for ${goal.title}`} />}</> : <form onSubmit={upload}><label className="file-label">Stake photo<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required /></label><p className="field-help">JPEG, PNG, or WebP · up to 5 MB / 16 megapixels</p><button className="secondary wide" disabled={busy}>{busy ? 'Uploading…' : 'Save private photo'}</button></form>}
+    {!active && (goal.stake_photo_id
+      ? goal.frequency ? <button className="primary wide activate" onClick={activate} disabled={busy}>{busy ? 'Activating…' : 'Activate goal'}</button> : <p className="field-help activate-help">This goal was created before schedules existed, so it cannot be activated.</p>
+      : <p className="field-help activate-help">A stake photo is required before this goal can be activated.</p>)}
+    {error && <p className="error" role="alert">{error}</p>}</div></article>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

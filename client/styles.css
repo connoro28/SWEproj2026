@@ -12,7 +12,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { opacity: .6; cursor: wait; }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
@@ -35,8 +35,8 @@ h3 { font-size: 17px; font-weight: 600; }
 .auth-tabs button { padding: 10px 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-size: 13px; }
 .auth-tabs button[aria-pressed=true] { color: #242927; border-bottom-color: var(--accent); font-weight: 600; }
 label { display: block; font-size: 13px; font-weight: 550; margin-bottom: 19px; }
-input, textarea { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; border: 1px solid #cbd2cd; border-radius: 4px; background: #fff; color: #242927; outline: none; }
-input:focus, textarea:focus { border-color: var(--accent); outline: 2px solid #305b451c; outline-offset: 1px; }
+input, textarea, select { display: block; width: 100%; margin-top: 7px; padding: 10px 12px; border: 1px solid #cbd2cd; border-radius: 4px; background: #fff; color: #242927; outline: none; }
+input:focus, textarea:focus, select:focus { border-color: var(--accent); outline: 2px solid #305b451c; outline-offset: 1px; }
 input::placeholder, textarea::placeholder { color: #7b847e; }
 textarea { resize: vertical; }
 .primary, .secondary { padding: 9px 15px; border-radius: 4px; border: 1px solid transparent; font-size: 13px; font-weight: 550; }
@@ -89,7 +89,12 @@ textarea { resize: vertical; }
 .draft-badge { font-size: 11px; color: #5f6862; padding: 2px 7px; border: 1px solid #e1e5e1; border-radius: 3px; background: #f6f7f6; }
 .goal-card h3 { margin: 12px 0 8px; overflow-wrap: anywhere; }
 .goal-description { color: var(--muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 14px; }
+.active-badge { font-size: 11px; color: #fff; padding: 2px 7px; border: 1px solid var(--accent); border-radius: 3px; background: var(--accent); }
+.goal-schedule { font-size: 13px; font-weight: 550; margin-bottom: 4px; overflow-wrap: anywhere; }
+.goal-schedule .muted { font-weight: 400; font-size: 12px; }
 .goal-date { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+.activate { margin-top: 16px; }
+.activate-help { margin: 14px 0 0; }
 .stake-area { padding-top: 18px; border-top: 1px solid #e8ebe8; }
 .file-label { font-size: 12px; margin-bottom: 16px; }
 input[type=file] { padding: 8px; font-size: 12px; }

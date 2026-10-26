@@ -39,12 +39,12 @@ The first five tasks have starter code, not automatically completed Jira tickets
 
 ## Decisions before activation and release
 
-- Define daily/weekly requirements, user timezones, grace periods, late uploads, and what happens after a missed window.
+- Define late uploads and what happens after a missed window. Frequency, time zones, and the no-grace-period rule are decided; see "Goal scheduling rules" in the README.
 - Decide the review policy for unreleased photos. The README proposal mentioned pre-approval; the later architecture uses reports and keeps unreleased stakes private. This starter permits only the owner to retrieve a stake, including when another account is an administrator.
 - Decide whether proof photos must be captured in the app. Current stake uploads accept existing files; they do not verify when a photo was taken. In-app capture alone cannot guarantee truthful evidence.
 - Explicitly show users the release conditions and intended audience before goal activation.
 
-No goals activate in this version. Target dates are planning dates, not deadlines for automatic release. Photos are never posted to another account.
+Goals activate once they have a stake photo. Target dates are planning dates, not deadlines for automatic release. Photos are never posted to another account.
 
 ## Branch review process
 

@@ -19,8 +19,9 @@ function agent() { return request.agent(app); }
 async function register(client, email = 'miguel@example.com', extras = {}) {
   return post(client, '/api/auth/register').send({ name: 'Miguel', email, password, ...extras }).expect(201);
 }
+const schedule = { frequency: 'daily', deadlineTime: '21:00', timezone: 'America/New_York' };
 async function goal(client, extras = {}) {
-  const res = await post(client, '/api/goals').send({ title: 'Study every day', ...extras }).expect(201);
+  const res = await post(client, '/api/goals').send({ title: 'Study every day', ...schedule, ...extras }).expect(201);
   return res.body.goal;
 }
 async function photoBuffer(format = 'png') {
@@ -135,9 +136,114 @@ test('goals persist, validate dates, and are scoped to the authenticated owner',
   assert.notEqual(created.owner_id, secondUser.body.user.id);
   assert.equal((await first.get('/api/goals').expect(200)).body.goals.length, 1);
   assert.equal((await second.get('/api/goals').expect(200)).body.goals.length, 0);
-  await post(first, '/api/goals').send({ title: '' }).expect(400);
-  await post(first, '/api/goals').send({ title: 'A', targetDate: '2026-02-30' }).expect(400);
+  await post(first, '/api/goals').send({ title: '', ...schedule }).expect(400);
+  await post(first, '/api/goals').send({ title: 'A', ...schedule, targetDate: '2026-02-30' }).expect(400);
   await request(app).get('/api/goals').expect(401);
+});
+
+test('daily and weekly goals store their schedule as drafts', async () => {
+  const client = agent();
+  await register(client);
+  const daily = await goal(client);
+  assert.equal(daily.status, 'draft');
+  assert.equal(daily.frequency, 'daily');
+  assert.equal(daily.times_per_week, null);
+  assert.match(daily.deadline_time, /^21:00/);
+  assert.equal(daily.timezone, 'America/New_York');
+  assert.equal(daily.activated_at, null);
+  const weekly = await goal(client, { frequency: 'weekly', timesPerWeek: 3, deadlineTime: '07:30', timezone: 'Europe/London' });
+  assert.equal(weekly.frequency, 'weekly');
+  assert.equal(weekly.times_per_week, 3);
+  assert.match(weekly.deadline_time, /^07:30/);
+  assert.equal(weekly.timezone, 'Europe/London');
+});
+
+test('goal schedules are validated', async () => {
+  const client = agent();
+  await register(client);
+  const invalid = [
+    { frequency: undefined },
+    { frequency: 'monthly' },
+    { frequency: 'weekly' },
+    { frequency: 'weekly', timesPerWeek: 0 },
+    { frequency: 'weekly', timesPerWeek: 8 },
+    { frequency: 'weekly', timesPerWeek: 2.5 },
+    { frequency: 'weekly', timesPerWeek: '3' },
+    { frequency: 'daily', timesPerWeek: 3 },
+    { timezone: 'Mars/Olympus_Mons' },
+    { timezone: '+05:00' },
+    { timezone: undefined },
+    { deadlineTime: '25:00' },
+    { deadlineTime: '9:00' },
+    { deadlineTime: undefined },
+  ];
+  for (const extras of invalid) {
+    const res = await post(client, '/api/goals').send({ title: 'Run', ...schedule, ...extras }).expect(400);
+    assert.ok(res.body.error, JSON.stringify(extras));
+  }
+  assert.equal((await db.query('SELECT * FROM goals')).rows.length, 0);
+});
+
+test('time zone aliases that browsers report are accepted', async () => {
+  // Intl.supportedValuesOf lists only canonical names, which excludes these.
+  const client = agent();
+  await register(client);
+  for (const timezone of ['UTC', 'Asia/Kolkata', 'Europe/Kyiv']) assert.equal((await goal(client, { timezone })).timezone, timezone);
+});
+
+test('a goal activates only once and only with a stake photo', async () => {
+  const client = agent();
+  await register(client);
+  const g = await goal(client);
+  const noStake = await post(client, `/api/goals/${g.id}/activate`).expect(409);
+  assert.match(noStake.body.error, /stake/i);
+  assert.equal((await db.query('SELECT status FROM goals')).rows[0].status, 'draft');
+  const photo = await post(client, `/api/goals/${g.id}/stake`).attach('photo', await photoBuffer(), 'stake.png').expect(201);
+  const activated = await post(client, `/api/goals/${g.id}/activate`).expect(200);
+  assert.equal(activated.body.goal.status, 'active');
+  assert.ok(activated.body.goal.activated_at);
+  assert.equal(activated.body.goal.stake_photo_id, photo.body.photo.id);
+  const again = await post(client, `/api/goals/${g.id}/activate`).expect(409);
+  assert.match(again.body.error, /already active/i);
+  const { body: { goals: [listed] } } = await client.get('/api/goals').expect(200);
+  assert.equal(listed.status, 'active');
+});
+
+test('activation is restricted to the goal owner and requires a session', async () => {
+  const owner = agent(), other = agent();
+  await register(owner);
+  await register(other, 'connor@example.com');
+  const g = await goal(owner);
+  await post(owner, `/api/goals/${g.id}/stake`).attach('photo', await photoBuffer(), 'stake.png').expect(201);
+  await post(other, `/api/goals/${g.id}/activate`).expect(404);
+  await post(request(app), `/api/goals/${g.id}/activate`).expect(401);
+  await request(app).post(`/api/goals/${g.id}/activate`).expect(403);
+  await post(owner, '/api/goals/not-a-uuid/activate').expect(404);
+  assert.equal((await db.query('SELECT status FROM goals')).rows[0].status, 'draft');
+});
+
+test('drafts created before scheduling existed cannot be activated', async () => {
+  const client = agent();
+  await register(client);
+  const g = await goal(client);
+  await post(client, `/api/goals/${g.id}/stake`).attach('photo', await photoBuffer(), 'stake.png').expect(201);
+  await db.query('UPDATE goals SET frequency = NULL, deadline_time = NULL, timezone = NULL');
+  await post(client, `/api/goals/${g.id}/activate`).expect(409);
+  assert.equal((await db.query('SELECT status FROM goals')).rows[0].status, 'draft');
+});
+
+test('the database rejects schedules the API would reject', async () => {
+  const client = agent();
+  const { body: { user } } = await register(client);
+  const insert = (columns, values) => db.query(`INSERT INTO goals (id, owner_id, title, ${columns}) VALUES ($1, $2, 'A', ${values})`,
+    [randomUUID(), user.id]);
+  await assert.rejects(insert('frequency', "'monthly'"), { code: '23514' });
+  await assert.rejects(insert('frequency', "'weekly'"), { code: '23514' });
+  await assert.rejects(insert('frequency, times_per_week', "'weekly', 8"), { code: '23514' });
+  await assert.rejects(insert('frequency, times_per_week', "'daily', 3"), { code: '23514' });
+  await assert.rejects(insert('status', "'archived'"), { code: '23514' });
+  await assert.rejects(insert('status, frequency, deadline_time, timezone', "'active', 'daily', '21:00', 'UTC'"), { code: '23514' });
+  await insert('frequency, times_per_week', "'weekly', 7");
 });
 
 test('PNG, JPEG, and WebP uploads are decoded and stored as private WebP images', async () => {

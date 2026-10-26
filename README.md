@@ -2,7 +2,7 @@
 
 Stake is a social accountability app built by Productivity Masters for CEN3031. This repository now contains the first runnable implementation of the PERN stack: PostgreSQL, Express, React, and Node.js.
 
-**Implemented:** registration, login/logout, member/admin access, draft goals, and private stake photo uploads with automated tests. **Planned:** projects/collaborators, check-ins, friendships/feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
+**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, and goal activation, with automated tests. **Planned:** projects/collaborators, goal windows and check-ins, friendships/feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
 
 ## Run locally
 
@@ -34,7 +34,7 @@ Open **http://localhost:5173**. Vite serves the React interface and forwards `/a
 
 The Compose credentials in `.env.example` are for this local database only. Docker exposes PostgreSQL on localhost port **5433** (the container uses 5432), avoiding conflicts with a separately installed PostgreSQL service. The database port and API bind to loopback. If using PostgreSQL installed separately instead of Docker, create a database and set `DATABASE_URL` to its connection string and port, then run the migration.
 
-`npm run db:migrate` applies the numbered SQL files in `server/migrations/` in filename order and records each one in a `schema_migrations` table, so every file runs exactly once per database and rerunning the command only applies files it has not seen. Each file runs in a single transaction: a failing migration leaves no partial changes and is not recorded. `001_initial.sql` creates users, sessions, goals, and photos, and does not erase data.
+`npm run db:migrate` applies the numbered SQL files in `server/migrations/` in filename order and records each one in a `schema_migrations` table, so every file runs exactly once per database and rerunning the command only applies files it has not seen. Each file runs in a single transaction: a failing migration leaves no partial changes and is not recorded. `001_initial.sql` creates users, sessions, goals, and photos; `002_goal_scheduling.sql` adds goal schedules and activation. Neither erases data.
 
 **Never edit a migration that has been committed or run anywhere.** Databases that already applied it will not run it again, so edits silently diverge. Put every schema change in a new, next-numbered file instead; see `server/migrations/README.md`.
 
@@ -47,7 +47,7 @@ npm test
 npm run build
 ```
 
-Tests use embedded PostgreSQL by default, with a separate temporary photo directory for each test. They cover authentication, role restrictions, invalid input, session expiry and logout, goal ownership, image formats/size, private retrieval, and duplicate upload cleanup.
+Tests use embedded PostgreSQL by default, with a separate temporary photo directory for each test. They cover authentication, role restrictions, invalid input, session expiry and logout, goal ownership, schedule validation, activation rules, image formats/size, private retrieval, and duplicate upload cleanup.
 
 To run against a real PostgreSQL server, set `TEST_DATABASE_URL` to a **dedicated disposable test database**, then run `npm test`. The test suite truncates its application tables before each test. Never use your development or production database as the test database.
 
@@ -74,12 +74,38 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 | POST | `/api/auth/login` | Verifies password and starts a session |
 | POST | `/api/auth/logout` | Revokes the session and clears the cookie |
 | GET | `/api/auth/me` | Returns the signed-in account |
-| GET / POST | `/api/goals` | Lists owned goals / creates a draft goal |
+| GET / POST | `/api/goals` | Lists owned goals / creates a draft goal; see the fields below |
 | POST | `/api/goals/:id/stake` | Uploads one private stake for an owned goal; multipart field `photo` |
+| POST | `/api/goals/:id/activate` | Activates an owned draft goal that has a stake photo; returns the goal |
 | GET | `/api/photos/:id` | Retrieves a photo only for its owner |
 | GET | `/api/admin/users` | Lists up to 100 accounts; admins only |
 
+`POST /api/goals` takes a JSON body:
+
+| Field | Required | Rules |
+| --- | --- | --- |
+| `title` | Yes | 1–120 characters |
+| `description` | No | Up to 1000 characters |
+| `targetDate` | No | `YYYY-MM-DD`; a planning date, not a deadline |
+| `frequency` | Yes | `daily` or `weekly` |
+| `timesPerWeek` | Weekly only | Integer 1–7; must be omitted for daily goals |
+| `deadlineTime` | Yes | 24-hour `HH:MM`, e.g. `21:00` |
+| `timezone` | Yes | IANA time zone, e.g. `America/New_York`; the client sends the browser's zone |
+
+Invalid fields return 400. New goals are always drafts. `POST /api/goals/:id/activate` returns 409 if the goal is already active or has no stake photo, and 404 for a goal the caller does not own. Activation is permanent: there is no endpoint to edit or deactivate an active goal.
+
 Uploads accept JPEG, PNG, and WebP images up to 5 MB and 16 megapixels. Images are decoded, resized when needed, stripped of original metadata, and stored as WebP. Files are outside the public frontend directory. PostgreSQL stores the image identifiers, ownership through the goal, and storage metadata. Responses never return filesystem paths. There is no photo-replacement or deletion flow yet.
+
+### Goal scheduling rules
+
+These are settled team decisions:
+
+- **Frequency.** A goal is either `daily` (a check-in every day) or `weekly` with a target of 1–7 check-ins per week.
+- **Time zones.** Each goal stores its own IANA time zone, captured from the browser when the goal is created. The deadline is a wall-clock time in that zone, so it does not shift if the user travels or changes their device's zone later.
+- **No grace period.** The deadline is a hard cutoff.
+- **A stake is required to activate.** A goal cannot be activated without a stake photo, as specified in the architecture document. This is the core product rule.
+
+Goal windows, check-ins, and stake release are not built yet; activation records `activated_at` for them to start from. Drafts created before migration `002_goal_scheduling` have no schedule and cannot be activated.
 
 ### Removing users and their photos
 
