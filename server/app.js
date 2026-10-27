@@ -13,6 +13,8 @@ const COOKIE = 'stake_session';
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const hashToken = token => createHash('sha256').update(token).digest('hex');
 const publicUser = ({ id, name, email, role }) => ({ id, name, email, role });
+// What one member may see of another. Never add email: it is private to its owner.
+const memberSummary = ({ id, name }) => ({ id, name });
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 0 } });
 const fail = (res, status, message) => res.status(status).json({ error: message });
@@ -206,6 +208,92 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     if (!rows.length) return fail(res, 404, 'Photo not found.');
     const bytes = await readFile(path.join(photosDir, rows[0].storage_key));
     res.type('webp').send(bytes);
+  });
+
+  // A friendship row's other member, seen from the caller ($1).
+  const otherMember = `JOIN users u ON u.id = CASE WHEN f.requester_id = $1 THEN f.addressee_id ELSE f.requester_id END
+    AND u.account_status = 'active'`;
+
+  app.get('/api/users/search', sessionUser, async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < 2 || q.length > 254) return fail(res, 400, 'Enter at least 2 characters to search.');
+    // Escape LIKE wildcards so a query such as %% cannot list every member.
+    const prefix = `${q.replace(/[\\%_]/g, '\\$&')}%`;
+    // friendships_pair_idx allows at most one row per pair, so the join cannot duplicate users.
+    const { rows } = await db.query(`SELECT u.id, u.name,
+        CASE WHEN f.status = 'accepted' THEN 'friends'
+             WHEN f.status = 'pending' AND f.requester_id = $1 THEN 'pending_outgoing'
+             WHEN f.status = 'pending' THEN 'pending_incoming'
+             ELSE 'none' END AS relationship
+      FROM users u
+      LEFT JOIN friendships f ON (f.requester_id = $1 AND f.addressee_id = u.id) OR (f.requester_id = u.id AND f.addressee_id = $1)
+      WHERE u.id <> $1 AND u.account_status = 'active' AND (lower(u.name) LIKE lower($2) ESCAPE '\\' OR u.email = $3)
+      ORDER BY lower(u.name), u.id LIMIT 20`, [req.user.id, prefix, q.toLowerCase()]);
+    res.json({ users: rows.map(row => ({ ...memberSummary(row), relationship: row.relationship })) });
+  });
+
+  app.post('/api/friends/requests', sessionUser, async (req, res) => {
+    const { addresseeId } = req.body ?? {};
+    if (typeof addresseeId !== 'string' || !uuid.test(addresseeId)) return fail(res, 400, 'Choose a member to send a friend request to.');
+    const addressee = addresseeId.toLowerCase();
+    if (addressee === req.user.id) return fail(res, 400, 'You cannot send a friend request to yourself.');
+    const { rows: [target] } = await db.query("SELECT id, name FROM users WHERE id = $1 AND account_status = 'active'", [addressee]);
+    if (!target) return fail(res, 404, 'Member not found.');
+    // The UNIQUE constraint covers one direction only, so look for a row either way.
+    const { rows: [existing] } = await db.query(`SELECT id, status, requester_id FROM friendships
+      WHERE (requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1)`, [req.user.id, addressee]);
+    if (existing?.status === 'accepted') return fail(res, 409, 'You are already friends with this member.');
+    if (existing?.status === 'pending') {
+      return fail(res, 409, existing.requester_id === req.user.id ? 'You already sent this member a friend request.'
+        : 'This member already sent you a friend request. Accept it instead.');
+    }
+    let rows;
+    try {
+      // A declined request is re-sent by reusing its row, in whichever direction the new request goes.
+      ({ rows } = existing
+        ? await db.query(`UPDATE friendships SET requester_id = $2, addressee_id = $3, status = 'pending', created_at = now(), responded_at = NULL
+            WHERE id = $1 AND status = 'declined' RETURNING id, status, created_at`, [existing.id, req.user.id, addressee])
+        : await db.query(`INSERT INTO friendships (id, requester_id, addressee_id) VALUES ($1, $2, $3)
+            RETURNING id, status, created_at`, [randomUUID(), req.user.id, addressee]));
+    } catch (error) {
+      // friendships_pair_idx: the other member sent a request at the same moment.
+      if (error.code === '23505') return fail(res, 409, 'A friend request between you and this member already exists.');
+      throw error;
+    }
+    if (!rows.length) return fail(res, 409, 'A friend request between you and this member already exists.');
+    res.status(201).json({ request: { ...rows[0], user: memberSummary(target) } });
+  });
+
+  app.get('/api/friends/requests', sessionUser, async (req, res) => {
+    const { rows } = await db.query(`SELECT f.id, f.created_at, f.requester_id = $1 AS outgoing, u.id AS user_id, u.name
+      FROM friendships f ${otherMember}
+      WHERE f.status = 'pending' AND (f.requester_id = $1 OR f.addressee_id = $1) ORDER BY f.created_at DESC`, [req.user.id]);
+    const shape = row => ({ id: row.id, created_at: row.created_at, user: memberSummary({ id: row.user_id, name: row.name }) });
+    res.json({ incoming: rows.filter(row => !row.outgoing).map(shape), outgoing: rows.filter(row => row.outgoing).map(shape) });
+  });
+
+  // Like ownGoal: a request the caller did not receive is reported as missing, not forbidden.
+  async function incomingRequest(req, res, next) {
+    if (!uuid.test(req.params.id)) return fail(res, 404, 'Friend request not found.');
+    const { rows } = await db.query('SELECT id FROM friendships WHERE id = $1 AND addressee_id = $2', [req.params.id, req.user.id]);
+    if (!rows.length) return fail(res, 404, 'Friend request not found.');
+    next();
+  }
+
+  const respondToRequest = status => async (req, res) => {
+    // The pending and addressee conditions are in the UPDATE, so concurrent responses succeed at most once.
+    const { rows } = await db.query(`UPDATE friendships SET status = $3, responded_at = now()
+      WHERE id = $1 AND addressee_id = $2 AND status = 'pending' RETURNING id, status, responded_at`, [req.params.id, req.user.id, status]);
+    if (!rows.length) return fail(res, 409, 'This friend request has already been answered.');
+    res.json({ request: rows[0] });
+  };
+  app.post('/api/friends/requests/:id/accept', sessionUser, incomingRequest, respondToRequest('accepted'));
+  app.post('/api/friends/requests/:id/decline', sessionUser, incomingRequest, respondToRequest('declined'));
+
+  app.get('/api/friends', sessionUser, async (req, res) => {
+    const { rows } = await db.query(`SELECT u.id, u.name FROM friendships f ${otherMember}
+      WHERE f.status = 'accepted' AND (f.requester_id = $1 OR f.addressee_id = $1) ORDER BY lower(u.name), u.id`, [req.user.id]);
+    res.json({ friends: rows.map(memberSummary) });
   });
 
   app.get('/api/admin/users', sessionUser, async (req, res) => {

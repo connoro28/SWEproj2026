@@ -2,7 +2,7 @@
 
 Stake is a social accountability app built by Productivity Masters for CEN3031. This repository now contains the first runnable implementation of the PERN stack: PostgreSQL, Express, React, and Node.js.
 
-**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, and goal activation, with automated tests. **Planned:** projects/collaborators, goal windows and check-ins, friendships/feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
+**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, goal activation, and friend requests (API only), with automated tests. **Planned:** projects/collaborators, goal windows and check-ins, the friends interface and feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
 
 ## Run locally
 
@@ -78,6 +78,11 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 | POST | `/api/goals/:id/stake` | Uploads one private stake for an owned goal; multipart field `photo` |
 | POST | `/api/goals/:id/activate` | Activates an owned draft goal that has a stake photo; returns the goal |
 | GET | `/api/photos/:id` | Retrieves a photo only for its owner |
+| GET | `/api/users/search?q=` | Finds up to 20 other active members by name prefix or exact email; `q` needs at least 2 characters. Returns `id`, `name`, and `relationship` (`none`, `pending_outgoing`, `pending_incoming`, `friends`), never email |
+| GET / POST | `/api/friends/requests` | Lists pending requests as `{ incoming, outgoing }` / sends a request; body `{ addresseeId }` |
+| POST | `/api/friends/requests/:id/accept` | Accepts a pending request; addressee only |
+| POST | `/api/friends/requests/:id/decline` | Declines a pending request; addressee only |
+| GET | `/api/friends` | Lists accepted friends in either direction (`id`, `name`) |
 | GET | `/api/admin/users` | Lists up to 100 accounts; admins only |
 
 `POST /api/goals` takes a JSON body:
@@ -95,6 +100,8 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 Invalid fields return 400. New goals are always drafts. `POST /api/goals/:id/activate` returns 409 if the goal is already active or has no stake photo, and 404 for a goal the caller does not own. Activation is permanent: there is no endpoint to edit or deactivate an active goal.
 
 Uploads accept JPEG, PNG, and WebP images up to 5 MB and 16 megapixels. Images are decoded, resized when needed, stripped of original metadata, and stored as WebP. Files are outside the public frontend directory. PostgreSQL stores the image identifiers, ownership through the goal, and storage metadata. Responses never return filesystem paths. There is no photo-replacement or deletion flow yet.
+
+Sending a friend request returns 400 for yourself, 404 for a missing or banned account, and 409 if a pending or accepted request already exists in either direction. Accepting or declining a request you did not receive returns 404; answering one that is no longer pending returns 409. A declined request can be sent again by either member. Banned members are left out of search, request lists, and friends lists.
 
 ### Goal scheduling rules
 
