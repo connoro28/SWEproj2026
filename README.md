@@ -2,7 +2,7 @@
 
 Stake is a social accountability app built by Productivity Masters for CEN3031. This repository now contains the first runnable implementation of the PERN stack: PostgreSQL, Express, React, and Node.js.
 
-**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, goal activation, and friend requests (API only), with automated tests. **Planned:** projects/collaborators, goal windows and check-ins, the friends interface and feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
+**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, goal activation, daily photo check-ins, and friend requests (API only), with automated tests. **Planned:** projects/collaborators, the friends interface and feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
 
 ## Run locally
 
@@ -77,7 +77,8 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 | GET / POST | `/api/goals` | Lists owned goals / creates a draft goal; see the fields below |
 | POST | `/api/goals/:id/stake` | Uploads one private stake for an owned goal; multipart field `photo` |
 | POST | `/api/goals/:id/activate` | Activates an owned draft goal that has a stake photo; returns the goal |
-| GET | `/api/photos/:id` | Retrieves a photo only for its owner |
+| GET / POST | `/api/goals/:id/check-ins` | Lists an owned goal's check-ins newest first with `progress` (`todayDone`, `thisWeekCount`, `target`, `canCheckInNow`) / submits today's photo check-in; multipart field `photo` |
+| GET | `/api/photos/:id` | Retrieves a stake or check-in photo only for its owner |
 | GET | `/api/users/search?q=` | Finds up to 20 other active members by name prefix or exact email; `q` needs at least 2 characters. Returns `id`, `name`, and `relationship` (`none`, `pending_outgoing`, `pending_incoming`, `friends`), never email |
 | GET / POST | `/api/friends/requests` | Lists pending requests as `{ incoming, outgoing }` / sends a request; body `{ addresseeId }` |
 | POST | `/api/friends/requests/:id/accept` | Accepts a pending request; addressee only |
@@ -99,6 +100,8 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 
 Invalid fields return 400. New goals are always drafts. `POST /api/goals/:id/activate` returns 409 if the goal is already active or has no stake photo, and 404 for a goal the caller does not own. Activation is permanent: there is no endpoint to edit or deactivate an active goal.
 
+`POST /api/goals/:id/check-ins` returns 409 if the goal is not active, if today's deadline has passed, or if the goal already has a check-in today. The server computes the local date and time in PostgreSQL from the goal's time zone; the client's clock is never used. Check-in photos follow the same upload rules as stakes.
+
 Uploads accept JPEG, PNG, and WebP images up to 5 MB and 16 megapixels. Images are decoded, resized when needed, stripped of original metadata, and stored as WebP. Files are outside the public frontend directory. PostgreSQL stores the image identifiers, ownership through the goal, and storage metadata. Responses never return filesystem paths. There is no photo-replacement or deletion flow yet.
 
 Sending a friend request returns 400 for yourself, 404 for a missing or banned account, and 409 if a pending or accepted request already exists in either direction. Accepting or declining a request you did not receive returns 404; answering one that is no longer pending returns 409. A declined request can be sent again by either member. Banned members are left out of search, request lists, and friends lists.
@@ -110,9 +113,10 @@ These are settled team decisions:
 - **Frequency.** A goal is either `daily` (a check-in every day) or `weekly` with a target of 1–7 check-ins per week.
 - **Time zones.** Each goal stores its own IANA time zone, captured from the browser when the goal is created. The deadline is a wall-clock time in that zone, so it does not shift if the user travels or changes their device's zone later.
 - **No grace period.** The deadline is a hard cutoff.
+- **Deadlines apply per day.** This includes weekly goals: "3 times per week by 9:00 PM" means check-ins on three separate days, each submitted by 9:00 PM in the goal's time zone. A goal accepts at most one check-in per local day, and once the deadline time passes that day is closed. Weeks start on Monday in the goal's time zone.
 - **A stake is required to activate.** A goal cannot be activated without a stake photo, as specified in the architecture document. This is the core product rule.
 
-Goal windows, check-ins, and stake release are not built yet; activation records `activated_at` for them to start from. Drafts created before migration `002_goal_scheduling` have no schedule and cannot be activated.
+Stake release is not built yet; activation records `activated_at` for it to start from. Drafts created before migration `002_goal_scheduling` have no schedule and cannot be activated.
 
 ### Removing users and their photos
 

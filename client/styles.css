@@ -94,6 +94,9 @@ textarea { resize: vertical; }
 .goal-schedule .muted { font-weight: 400; font-size: 12px; }
 .goal-date { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
 .activate { margin-top: 16px; }
+.check-in-area { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e8ebe8; }
+.check-in-status { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; margin-bottom: 14px; }
+.check-in-status span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .activate-help { margin: 14px 0 0; }
 .stake-area { padding-top: 18px; border-top: 1px solid #e8ebe8; }
 .file-label { font-size: 12px; margin-bottom: 16px; }

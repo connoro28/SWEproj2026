@@ -120,7 +120,7 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
 
   app.get('/api/goals', sessionUser, async (req, res) => {
     const { rows } = await db.query(`SELECT g.*, p.id AS stake_photo_id FROM goals g
-      LEFT JOIN photos p ON p.goal_id = g.id WHERE g.owner_id = $1 ORDER BY g.created_at DESC`, [req.user.id]);
+      LEFT JOIN photos p ON p.goal_id = g.id AND p.kind = 'stake' WHERE g.owner_id = $1 ORDER BY g.created_at DESC`, [req.user.id]);
     res.json({ goals: rows });
   });
 
@@ -159,8 +159,8 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     try {
       // The status and photo conditions are in the UPDATE, so concurrent requests activate a goal at most once.
       ({ rows } = await db.query(`UPDATE goals g SET status = 'active', activated_at = now()
-        WHERE g.id = $1 AND g.status = 'draft' AND EXISTS (SELECT 1 FROM photos p WHERE p.goal_id = g.id)
-        RETURNING g.*, (SELECT p.id FROM photos p WHERE p.goal_id = g.id) AS stake_photo_id`, [req.params.id]));
+        WHERE g.id = $1 AND g.status = 'draft' AND EXISTS (SELECT 1 FROM photos p WHERE p.goal_id = g.id AND p.kind = 'stake')
+        RETURNING g.*, (SELECT p.id FROM photos p WHERE p.goal_id = g.id AND p.kind = 'stake') AS stake_photo_id`, [req.params.id]));
     } catch (error) {
       // goals_active_schedule_check: drafts created before 002_goal_scheduling have no schedule.
       if (error.code === '23514') return fail(res, 409, 'This goal has no schedule, so it cannot be activated.');
@@ -172,34 +172,99 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     return fail(res, 409, 'Add a stake photo before activating this goal.');
   });
 
-  app.post('/api/goals/:id/stake', sessionUser, ownGoal,
-    rateLimit({ windowMs: 15 * 60 * 1000, limit: 40 }), upload.single('photo'), async (req, res) => {
-      if (!req.file) return fail(res, 400, 'Choose a JPEG, PNG, or WebP photo.');
-      let image;
-      try {
-        const decoder = sharp(req.file.buffer, { limitInputPixels: 16000000, animated: false });
-        const metadata = await decoder.metadata();
-        if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages ?? 1) > 1) throw new Error('Unsupported image');
-        // Re-encoding removes uploaded filenames, location metadata, and non-image payloads.
-        image = await decoder.rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer();
-      } catch {
-        return fail(res, 400, 'This file is not a supported image. Use a JPEG, PNG, or WebP of at most 5 MB.');
-      }
-      const id = randomUUID();
-      const storageKey = `${id}.webp`;
-      const filePath = path.join(photosDir, storageKey);
-      await mkdir(photosDir, { recursive: true, mode: 0o700 });
-      await writeFile(filePath, image, { mode: 0o600, flag: 'wx' });
-      try {
-        await db.query('INSERT INTO photos (id, goal_id, storage_key, content_type, byte_size) VALUES ($1, $2, $3, $4, $5)',
-          [id, req.params.id, storageKey, 'image/webp', image.length]);
-      } catch (error) {
-        await unlink(filePath);
-        if (error.code === '23505') return fail(res, 409, 'This goal already has a stake photo.');
-        throw error;
-      }
-      res.status(201).json({ photo: { id, url: `/api/photos/${id}` } });
-    });
+  const uploadLimit = () => rateLimit({ windowMs: 15 * 60 * 1000, limit: 40 });
+  const unsupportedImage = 'This file is not a supported image. Use a JPEG, PNG, or WebP of at most 5 MB.';
+
+  // Decodes an uploaded image, re-encodes it as WebP, and writes it to private storage.
+  // Returns null when the upload is not a supported still image. The caller records
+  // the photo row and must unlink filePath if that fails.
+  async function storePhoto(buffer) {
+    let image;
+    try {
+      const decoder = sharp(buffer, { limitInputPixels: 16000000, animated: false });
+      const metadata = await decoder.metadata();
+      if (!['jpeg', 'png', 'webp'].includes(metadata.format) || (metadata.pages ?? 1) > 1) throw new Error('Unsupported image');
+      // Re-encoding removes uploaded filenames, location metadata, and non-image payloads.
+      image = await decoder.rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer();
+    } catch {
+      return null;
+    }
+    const id = randomUUID();
+    const storageKey = `${id}.webp`;
+    const filePath = path.join(photosDir, storageKey);
+    await mkdir(photosDir, { recursive: true, mode: 0o700 });
+    await writeFile(filePath, image, { mode: 0o600, flag: 'wx' });
+    return { id, storageKey, filePath, byteSize: image.length };
+  }
+
+  app.post('/api/goals/:id/stake', sessionUser, ownGoal, uploadLimit(), upload.single('photo'), async (req, res) => {
+    if (!req.file) return fail(res, 400, 'Choose a JPEG, PNG, or WebP photo.');
+    const photo = await storePhoto(req.file.buffer);
+    if (!photo) return fail(res, 400, unsupportedImage);
+    try {
+      await db.query('INSERT INTO photos (id, goal_id, storage_key, content_type, byte_size) VALUES ($1, $2, $3, $4, $5)',
+        [photo.id, req.params.id, photo.storageKey, 'image/webp', photo.byteSize]);
+    } catch (error) {
+      await unlink(photo.filePath);
+      if (error.code === '23505') return fail(res, 409, 'This goal already has a stake photo.');
+      throw error;
+    }
+    res.status(201).json({ photo: { id: photo.id, url: `/api/photos/${photo.id}` } });
+  });
+
+  // Deadlines apply per local day for daily and weekly goals alike, with no grace period.
+  // Postgres computes the goal's local date and time from its own tzdata.
+  app.post('/api/goals/:id/check-ins', sessionUser, ownGoal, uploadLimit(), upload.single('photo'), async (req, res) => {
+    if (!req.file) return fail(res, 400, 'Choose a JPEG, PNG, or WebP photo.');
+    const photo = await storePhoto(req.file.buffer);
+    if (!photo) return fail(res, 400, unsupportedImage);
+    let rows;
+    try {
+      // One statement: eligibility is checked in the same INSERT, and a refused or duplicate
+      // check-in leaves no photo row behind, so concurrent requests cannot both succeed.
+      ({ rows } = await db.query(`WITH eligible AS (
+          SELECT g.id, (now() AT TIME ZONE g.timezone)::date AS local_date FROM goals g
+          WHERE g.id = $3 AND g.owner_id = $4 AND g.status = 'active'
+            AND (now() AT TIME ZONE g.timezone)::time <= g.deadline_time
+        ), photo AS (
+          INSERT INTO photos (id, goal_id, storage_key, content_type, byte_size, kind)
+          SELECT $2, id, $5, 'image/webp', $6, 'checkin' FROM eligible RETURNING id
+        )
+        INSERT INTO check_ins (id, goal_id, photo_id, local_date)
+        SELECT $1, eligible.id, photo.id, eligible.local_date FROM eligible, photo
+        RETURNING id, to_char(local_date, 'YYYY-MM-DD') AS local_date, submitted_at, photo_id`,
+      [randomUUID(), photo.id, req.params.id, req.user.id, photo.storageKey, photo.byteSize]));
+    } catch (error) {
+      await unlink(photo.filePath);
+      // check_ins (goal_id, local_date): one check-in per local day.
+      if (error.code === '23505') return fail(res, 409, 'You already checked in today.');
+      throw error;
+    }
+    if (rows.length) return res.status(201).json({ checkIn: rows[0] });
+    await unlink(photo.filePath);
+    const { rows: [current] } = await db.query('SELECT status FROM goals WHERE id = $1', [req.params.id]);
+    if (current?.status !== 'active') return fail(res, 409, 'Activate this goal before checking in.');
+    return fail(res, 409, "Today's deadline has passed.");
+  });
+
+  app.get('/api/goals/:id/check-ins', sessionUser, ownGoal, async (req, res) => {
+    // local_date is returned as text: a DATE parsed into a JS Date shifts with the server's zone.
+    const { rows: checkIns } = await db.query(`SELECT id, to_char(local_date, 'YYYY-MM-DD') AS local_date, submitted_at, photo_id
+      FROM check_ins WHERE goal_id = $1 ORDER BY local_date DESC`, [req.params.id]);
+    // date_trunc('week') starts the ISO week on Monday, in the goal's own zone.
+    const { rows: [goal] } = await db.query(`SELECT g.frequency, g.times_per_week,
+        EXISTS (SELECT 1 FROM check_ins c WHERE c.goal_id = g.id AND c.local_date = (now() AT TIME ZONE g.timezone)::date) AS today_done,
+        (SELECT count(*)::int FROM check_ins c WHERE c.goal_id = g.id
+          AND c.local_date >= date_trunc('week', now() AT TIME ZONE g.timezone)::date) AS this_week_count,
+        COALESCE(g.status = 'active' AND (now() AT TIME ZONE g.timezone)::time <= g.deadline_time, false) AS before_deadline
+      FROM goals g WHERE g.id = $1`, [req.params.id]);
+    res.json({ checkIns, progress: {
+      todayDone: goal.today_done,
+      thisWeekCount: goal.this_week_count,
+      target: goal.frequency === 'weekly' ? goal.times_per_week : goal.frequency === 'daily' ? 1 : null,
+      canCheckInNow: goal.before_deadline && !goal.today_done,
+    } });
+  });
 
   app.get('/api/photos/:id', sessionUser, async (req, res) => {
     if (!uuid.test(req.params.id)) return fail(res, 404, 'Photo not found.');

@@ -115,7 +115,7 @@ function Dashboard({ user, setUser }) {
         {creating && <section className="new-goal"><h2>New goal</h2><form onSubmit={createGoal}><label>Goal title<input name="title" maxLength={120} placeholder="e.g. Study for 30 minutes each day" required autoFocus /></label><label>Description <span className="muted">(optional)</span><textarea name="description" maxLength={1000} placeholder="Add details about your goal" rows={3} /></label><label>Target date <span className="muted">(optional)</span><input name="targetDate" type="date" /></label><label>Frequency<select name="frequency" value={frequency} onChange={e => setFrequency(e.target.value)}><option value="daily">Every day</option><option value="weekly">Some days each week</option></select></label>{frequency === 'weekly' && <label>Times per week<input name="timesPerWeek" type="number" min={1} max={7} step={1} defaultValue={3} required /></label>}<label>Deadline time<input name="deadlineTime" type="time" defaultValue="21:00" required /></label><p className="field-help">Deadlines use your time zone, <strong>{browserTimeZone}</strong>. The deadline is a hard cutoff with no grace period.</p><div className="form-actions"><button type="button" className="secondary" onClick={() => setCreating(false)} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? 'Saving…' : 'Save goal'}</button></div></form></section>}
         <div className="section-title"><h2>Saved goals</h2></div>
         {loading ? <p role="status">Loading your goals…</p> : goals.length ? <div className="goal-grid">{goals.map(goal => <GoalCard key={goal.id} goal={goal} onChanged={reload} />)}</div> : <section className="empty"><h2>No goals yet</h2><p>Create a goal to get started.</p><button className="secondary" onClick={() => setCreating(true)}>Create your first goal</button></section>}
-        <p className="build-note">Goals are saved as drafts and can be activated once they have a stake photo. Check-ins and photo release are not available yet.</p></>}
+        <p className="build-note">Goals are saved as drafts and can be activated once they have a stake photo. Active goals take one photo check-in per day. Photo release is not available yet.</p></>}
       {view === 'account' && <><div className="page-heading"><div><h1>My account</h1></div></div><section className="account-card"><dl><dt>Name</dt><dd>{user.name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account type</dt><dd>{user.role}</dd></dl><p className="muted">Your private stake photos are visible only to you.</p></section></>}
       {view === 'admin' && <><div className="page-heading"><div><h1>Member directory</h1><p className="muted">The newest 100 accounts. Content review and account management are planned for a later version.</p></div></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>{users.map(u => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td>{u.role}</td><td>{u.account_status}</td></tr>)}</tbody></table></div></>}
     </main>
@@ -143,7 +143,31 @@ function GoalCard({ goal, onChanged }) {
     {!active && (goal.stake_photo_id
       ? goal.frequency ? <button className="primary wide activate" onClick={activate} disabled={busy}>{busy ? 'Activating…' : 'Activate goal'}</button> : <p className="field-help activate-help">This goal was created before schedules existed, so it cannot be activated.</p>
       : <p className="field-help activate-help">A stake photo is required before this goal can be activated.</p>)}
-    {error && <p className="error" role="alert">{error}</p>}</div></article>;
+    {error && <p className="error" role="alert">{error}</p>}</div>{active && <CheckInPanel goal={goal} />}</article>;
+}
+
+function CheckInPanel({ goal }) {
+  const [progress, setProgress] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function load() {
+    try { setProgress((await api(`/goals/${goal.id}/check-ins`)).progress); }
+    catch (e) { setError(e.message); }
+  }
+  useEffect(() => { load(); }, [goal.id]);
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    try { await api(`/goals/${goal.id}/check-ins`, { method: 'POST', body: new FormData(event.currentTarget) }); }
+    catch (e) { setError(e.message); }
+    // Reload either way: a refused check-in usually means the day closed or was already done.
+    finally { await load(); setBusy(false); }
+  }
+  if (!progress) return <div className="check-in-area">{error ? <p className="error" role="alert">{error}</p> : <p className="muted" role="status">Loading check-ins…</p>}</div>;
+  return <div className="check-in-area"><div className="check-in-status"><strong>{progress.todayDone ? 'Checked in today' : 'Not yet today'}</strong>{goal.frequency === 'weekly' && <span>{progress.thisWeekCount} of {progress.target} this week</span>}</div>
+    {progress.canCheckInNow
+      ? <form onSubmit={submit}><label className="file-label">Check-in photo<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" required /></label><p className="field-help">Due by {formatDeadline(goal.deadline_time)} ({goal.timezone}) · one check-in per day</p><button className="primary wide" disabled={busy}>{busy ? 'Uploading…' : 'Check in'}</button></form>
+      : <p className="field-help activate-help">{progress.todayDone ? 'You can check in again tomorrow.' : `Today's deadline of ${formatDeadline(goal.deadline_time)} has passed. You can check in again tomorrow.`}</p>}
+    {error && <p className="error" role="alert">{error}</p>}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
