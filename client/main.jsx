@@ -106,7 +106,7 @@ function Dashboard({ user, setUser }) {
     catch (e) { setError(e.message); }
   }
   return <div className="app-shell">
-    <aside className="sidebar"><Brand /><nav><button className={view === 'goals' ? 'selected' : ''} onClick={() => setView('goals')}>My goals</button><button className={view === 'account' ? 'selected' : ''} onClick={() => setView('account')}>My account</button>{user.role === 'admin' && <button className={view === 'admin' ? 'selected' : ''} onClick={showAdmin}>Administration</button>}</nav><div className="sidebar-bottom"><div className="profile"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><div><strong>{user.name}</strong><small>{user.role === 'admin' ? 'Administrator' : 'Member'}</small></div></div><button className="logout" onClick={logout} disabled={busy}>Log out</button></div></aside>
+    <aside className="sidebar"><Brand /><nav><button className={view === 'goals' ? 'selected' : ''} onClick={() => setView('goals')}>My goals</button><button className={view === 'feed' ? 'selected' : ''} onClick={() => setView('feed')}>Feed</button><button className={view === 'account' ? 'selected' : ''} onClick={() => setView('account')}>My account</button>{user.role === 'admin' && <button className={view === 'admin' ? 'selected' : ''} onClick={showAdmin}>Administration</button>}</nav><div className="sidebar-bottom"><div className="profile"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><div><strong>{user.name}</strong><small>{user.role === 'admin' ? 'Administrator' : 'Member'}</small></div></div><button className="logout" onClick={logout} disabled={busy}>Log out</button></div></aside>
     <main className="workspace">
       {error && <p role="alert" className="error">{error} <button className="text-button" onClick={reload}>Retry</button></p>}
       {view === 'goals' && <><div className="page-heading"><div><h1>My goals</h1><p className="muted">Create goals and add a private stake photo.</p></div><button className="primary" onClick={() => { setCreating(!creating); setNotice(''); }}>{creating ? 'Close form' : 'New goal'}</button></div>
@@ -115,11 +115,45 @@ function Dashboard({ user, setUser }) {
         {creating && <section className="new-goal"><h2>New goal</h2><form onSubmit={createGoal}><label>Goal title<input name="title" maxLength={120} placeholder="e.g. Study for 30 minutes each day" required autoFocus /></label><label>Description <span className="muted">(optional)</span><textarea name="description" maxLength={1000} placeholder="Add details about your goal" rows={3} /></label><label>Target date <span className="muted">(optional)</span><input name="targetDate" type="date" /></label><label>Frequency<select name="frequency" value={frequency} onChange={e => setFrequency(e.target.value)}><option value="daily">Every day</option><option value="weekly">Some days each week</option></select></label>{frequency === 'weekly' && <label>Times per week<input name="timesPerWeek" type="number" min={1} max={7} step={1} defaultValue={3} required /></label>}<label>Deadline time<input name="deadlineTime" type="time" defaultValue="21:00" required /></label><p className="field-help">Deadlines use your time zone, <strong>{browserTimeZone}</strong>. The deadline is a hard cutoff with no grace period.</p><div className="form-actions"><button type="button" className="secondary" onClick={() => setCreating(false)} disabled={busy}>Cancel</button><button className="primary" disabled={busy}>{busy ? 'Saving…' : 'Save goal'}</button></div></form></section>}
         <div className="section-title"><h2>Saved goals</h2></div>
         {loading ? <p role="status">Loading your goals…</p> : goals.length ? <div className="goal-grid">{goals.map(goal => <GoalCard key={goal.id} goal={goal} onChanged={reload} />)}</div> : <section className="empty"><h2>No goals yet</h2><p>Create a goal to get started.</p><button className="secondary" onClick={() => setCreating(true)}>Create your first goal</button></section>}
-        <p className="build-note">Goals are saved as drafts and can be activated once they have a stake photo. Active goals take one photo check-in per day. Photo release is not available yet.</p></>}
+        <p className="build-note">Goals are saved as drafts and can be activated once they have a stake photo. Active goals take one photo check-in per day, which your friends see in their feed. Stake photos stay private, and stake release is not available yet.</p></>}
+      {view === 'feed' && <Feed onSignedOut={() => setUser(null)} />}
       {view === 'account' && <><div className="page-heading"><div><h1>My account</h1></div></div><section className="account-card"><dl><dt>Name</dt><dd>{user.name}</dd><dt>Email</dt><dd>{user.email}</dd><dt>Account type</dt><dd>{user.role}</dd></dl><p className="muted">Your private stake photos are visible only to you.</p></section></>}
       {view === 'admin' && <><div className="page-heading"><div><h1>Member directory</h1><p className="muted">The newest 100 accounts. Content review and account management are planned for a later version.</p></div></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>{users.map(u => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td>{u.role}</td><td>{u.account_status}</td></tr>)}</tbody></table></div></>}
     </main>
   </div>;
+}
+
+const relativeTimeFormat = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+function relativeTime(iso) {
+  const seconds = (Date.parse(iso) - Date.now()) / 1000;
+  for (const [unit, size] of [['day', 86400], ['hour', 3600], ['minute', 60]]) {
+    if (Math.abs(seconds) >= size) return relativeTimeFormat.format(Math.round(seconds / size), unit);
+  }
+  return 'just now';
+}
+
+function Feed({ onSignedOut }) {
+  const [items, setItems] = useState([]);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  async function load(cursor) {
+    setLoading(true); setError('');
+    try {
+      const result = await api(`/feed${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`);
+      setItems(current => cursor ? [...current, ...result.items] : result.items);
+      setNextCursor(result.nextCursor);
+    }
+    catch (e) { if (e.status === 401) onSignedOut(); else setError(e.message); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { load(); }, []);
+  return <><div className="page-heading"><div><h1>Feed</h1><p className="muted">Check-ins from your friends. Stake photos are never shown here.</p></div></div>
+    {error && <p role="alert" className="error">{error} <button className="text-button" onClick={() => load(items.length ? nextCursor : undefined)}>Retry</button></p>}
+    {items.length ? <div className="feed">{items.map(item => <article className="feed-item" key={item.id}><div className="feed-meta"><strong>{item.friend.name}</strong><time dateTime={item.submitted_at} title={new Date(item.submitted_at).toLocaleString()}>{relativeTime(item.submitted_at)}</time></div><p className="feed-goal">{item.goal.title}</p><img className="feed-photo" src={`/api/photos/${item.photo_id}`} alt={`${item.friend.name}'s check-in for ${item.goal.title}`} loading="lazy" /></article>)}</div>
+      : loading ? <p role="status">Loading your feed…</p>
+      : !error && <section className="empty"><h2>Nothing in your feed yet</h2><p>When your friends check in on their goals, their photos appear here. Add friends to start seeing their progress.</p></section>}
+    {nextCursor && <button className="secondary wide feed-more" onClick={() => load(nextCursor)} disabled={loading}>{loading ? 'Loading…' : 'Load more'}</button>}</>;
 }
 
 function GoalCard({ goal, onChanged }) {

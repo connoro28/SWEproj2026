@@ -266,10 +266,22 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     } });
   });
 
+  // SQL true when the users in columns a and b have an accepted friendship, in either direction.
+  const acceptedFriends = (a, b) => `EXISTS (SELECT 1 FROM friendships f WHERE f.status = 'accepted'
+    AND ((f.requester_id = ${a} AND f.addressee_id = ${b}) OR (f.requester_id = ${b} AND f.addressee_id = ${a})))`;
+
+  // A stake photo is private to its owner forever: not friends, not administrators.
+  // Accepted friends may see check-in photos, under exactly the conditions that put
+  // them in the feed. Everyone else gets 404, so a response never confirms a photo exists.
   app.get('/api/photos/:id', sessionUser, async (req, res) => {
     if (!uuid.test(req.params.id)) return fail(res, 404, 'Photo not found.');
-    const { rows } = await db.query(`SELECT p.storage_key FROM photos p JOIN goals g ON g.id = p.goal_id
-      WHERE p.id = $1 AND g.owner_id = $2`, [req.params.id, req.user.id]);
+    const { rows } = await db.query(`SELECT p.storage_key FROM photos p
+      JOIN goals g ON g.id = p.goal_id
+      JOIN users owner ON owner.id = g.owner_id
+      WHERE p.id = $1 AND (
+        g.owner_id = $2
+        OR (p.kind = 'checkin' AND g.status = 'active' AND owner.account_status = 'active' AND ${acceptedFriends('$2', 'g.owner_id')})
+      )`, [req.params.id, req.user.id]);
     if (!rows.length) return fail(res, 404, 'Photo not found.');
     const bytes = await readFile(path.join(photosDir, rows[0].storage_key));
     res.type('webp').send(bytes);
@@ -359,6 +371,46 @@ export function createApp({ db, uploadDir, appOrigin = 'http://localhost:5173', 
     const { rows } = await db.query(`SELECT u.id, u.name FROM friendships f ${otherMember}
       WHERE f.status = 'accepted' AND (f.requester_id = $1 OR f.addressee_id = $1) ORDER BY lower(u.name), u.id`, [req.user.id]);
     res.json({ friends: rows.map(memberSummary) });
+  });
+
+  // The cursor is the last item's (submitted_at, id). submitted_at travels as text with
+  // microseconds: a JS Date keeps only milliseconds and would skip or repeat items.
+  const feedPage = 20;
+  const encodeCursor = (at, id) => Buffer.from(JSON.stringify({ at, id })).toString('base64url');
+  function decodeCursor(cursor) {
+    try {
+      const { at, id } = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+      // The round trip rejects impossible dates such as Feb 30, which Postgres would refuse with a 500.
+      if (typeof at === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(at) && Number.isFinite(Date.parse(at)) &&
+          new Date(at).toISOString().slice(0, 23) === at.slice(0, 23) &&
+          typeof id === 'string' && uuid.test(id)) return { at, id };
+    } catch { /* fall through */ }
+    return null;
+  }
+
+  app.get('/api/feed', sessionUser, async (req, res) => {
+    let after = null;
+    if (req.query.cursor !== undefined) {
+      after = typeof req.query.cursor === 'string' ? decodeCursor(req.query.cursor) : null;
+      if (!after) return fail(res, 400, 'The feed position is not valid. Reload the feed.');
+    }
+    const { rows } = await db.query(`SELECT c.id, to_char(c.local_date, 'YYYY-MM-DD') AS local_date, c.submitted_at, c.photo_id,
+        g.id AS goal_id, g.title AS goal_title, owner.id AS friend_id, owner.name AS friend_name,
+        to_char(c.submitted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+      FROM check_ins c
+      JOIN goals g ON g.id = c.goal_id
+      JOIN users owner ON owner.id = g.owner_id
+      WHERE g.status = 'active' AND owner.account_status = 'active' AND owner.id <> $1
+        AND ${acceptedFriends('$1', 'owner.id')}
+        AND ($2::timestamptz IS NULL OR (c.submitted_at, c.id) < ($2::timestamptz, $3::uuid))
+      ORDER BY c.submitted_at DESC, c.id DESC LIMIT ${feedPage + 1}`, [req.user.id, after?.at ?? null, after?.id ?? null]);
+    const page = rows.slice(0, feedPage);
+    const last = page.at(-1);
+    res.json({
+      items: page.map(row => ({ id: row.id, local_date: row.local_date, submitted_at: row.submitted_at, photo_id: row.photo_id,
+        goal: { id: row.goal_id, title: row.goal_title }, friend: memberSummary({ id: row.friend_id, name: row.friend_name }) })),
+      nextCursor: rows.length > feedPage ? encodeCursor(last.cursor_at, last.id) : null,
+    });
   });
 
   app.get('/api/admin/users', sessionUser, async (req, res) => {

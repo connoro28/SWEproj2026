@@ -2,7 +2,7 @@
 
 Stake is a social accountability app built by Productivity Masters for CEN3031. This repository now contains the first runnable implementation of the PERN stack: PostgreSQL, Express, React, and Node.js.
 
-**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, goal activation, daily photo check-ins, and friend requests (API only), with automated tests. **Planned:** projects/collaborators, the friends interface and feed, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
+**Implemented:** registration, login/logout, member/admin access, scheduled goals (daily or weekly, with a deadline time and time zone), private stake photo uploads, goal activation, daily photo check-ins, friend requests (API only), and a friends' check-in feed, with automated tests. **Planned:** projects/collaborators, the friends interface, reminders, moderation, and scheduled stake release. No photos are automatically released in this version.
 
 ## Run locally
 
@@ -78,7 +78,8 @@ State-changing requests require `X-Stake-Request: 1`. If an Origin header is pre
 | POST | `/api/goals/:id/stake` | Uploads one private stake for an owned goal; multipart field `photo` |
 | POST | `/api/goals/:id/activate` | Activates an owned draft goal that has a stake photo; returns the goal |
 | GET / POST | `/api/goals/:id/check-ins` | Lists an owned goal's check-ins newest first with `progress` (`todayDone`, `thisWeekCount`, `target`, `canCheckInNow`) / submits today's photo check-in; multipart field `photo` |
-| GET | `/api/photos/:id` | Retrieves a stake or check-in photo only for its owner |
+| GET | `/api/photos/:id` | Retrieves a photo for its owner; accepted friends may retrieve check-in photos only, never stakes. Everyone else gets 404 |
+| GET | `/api/feed?cursor=` | Lists accepted friends' check-ins on active goals, newest first, 20 per page, with `nextCursor` (null on the last page) |
 | GET | `/api/users/search?q=` | Finds up to 20 other active members by name prefix or exact email; `q` needs at least 2 characters. Returns `id`, `name`, and `relationship` (`none`, `pending_outgoing`, `pending_incoming`, `friends`), never email |
 | GET / POST | `/api/friends/requests` | Lists pending requests as `{ incoming, outgoing }` / sends a request; body `{ addresseeId }` |
 | POST | `/api/friends/requests/:id/accept` | Accepts a pending request; addressee only |
@@ -105,6 +106,12 @@ Invalid fields return 400. New goals are always drafts. `POST /api/goals/:id/act
 Uploads accept JPEG, PNG, and WebP images up to 5 MB and 16 megapixels. Images are decoded, resized when needed, stripped of original metadata, and stored as WebP. Files are outside the public frontend directory. PostgreSQL stores the image identifiers, ownership through the goal, and storage metadata. Responses never return filesystem paths. There is no photo-replacement or deletion flow yet.
 
 Sending a friend request returns 400 for yourself, 404 for a missing or banned account, and 409 if a pending or accepted request already exists in either direction. Accepting or declining a request you did not receive returns 404; answering one that is no longer pending returns 409. A declined request can be sent again by either member. Banned members are left out of search, request lists, and friends lists.
+
+### Photo privacy
+
+**A stake photo is private to its owner, forever.** No friend and no administrator can retrieve it. Check-in photos are visible to the owner and to members with an *accepted* friendship with the owner, as long as the owner's account and the goal are active; these are the same conditions that put a check-in in the feed. Pending and declined requests grant nothing. Every refused photo request returns 404, exactly like a photo that does not exist. The rule lives in one SQL query in `GET /api/photos/:id`; `server/test/feed.test.js` holds the authorization tests.
+
+The feed uses a cursor (the last item's `submitted_at` with microseconds, and its id) rather than an offset, so items are not skipped or repeated when new check-ins arrive while someone scrolls.
 
 ### Goal scheduling rules
 

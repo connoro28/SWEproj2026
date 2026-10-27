@@ -105,6 +105,14 @@ input::file-selector-button { background: #f3f5f3; color: #303833; border: 1px s
 .stake-status { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; color: #40654e; }
 .text-button { padding: 0; border: 0; background: none; color: var(--accent); text-decoration: underline; font-size: 12px; }
 .stake-preview { width: 100%; max-height: 300px; object-fit: contain; margin-top: 17px; background: #f3f5f3; border-radius: 4px; }
+.feed { display: grid; gap: 20px; max-width: 640px; }
+.feed-item { padding: 20px; border: 1px solid var(--border); border-radius: 5px; background: #fff; min-width: 0; }
+.feed-meta { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 13px; }
+.feed-meta strong { overflow-wrap: anywhere; }
+.feed-meta time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.feed-goal { margin: 4px 0 14px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.feed-photo { display: block; width: 100%; max-height: 420px; object-fit: contain; background: #f3f5f3; border-radius: 4px; }
+.feed-more { max-width: 640px; margin-top: 20px; }
 .account-card dl { display: grid; grid-template-columns: 120px 1fr; gap: 18px; margin: 0 0 26px; font-size: 13px; }
 .account-card dt { color: var(--muted); }
 .account-card dd { margin: 0; overflow-wrap: anywhere; }
